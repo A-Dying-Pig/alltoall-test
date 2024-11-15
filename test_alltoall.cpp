@@ -242,22 +242,21 @@ int main(int argc, char* argv[]) {
     struct GlobalScheduler scheduler;
     uint server_n = 2, gpu_n = 8;
     init_global_scheduler(&scheduler, server_n, gpu_n, workload);
-    // run_scheduler(&scheduler);
+    run_scheduler(&scheduler);
 
-    // struct alltoall_parameters param;
-    // allocate_device_memory(&param, server_n, gpu_n);
-    // initialize_buffer(&param, workload, rank, server_n, gpu_n);
-    // param.sched = scheduler.sched;
-    // // RCCLCHECK(hipMemcpy(param->sched, scheduler.sched, sizeof(struct scheduling_result_t), hipMemcpyHostToDevice));
+    struct alltoall_parameters param;
+    allocate_device_memory(&param, server_n, gpu_n);
+    initialize_buffer(&param, workload, rank, server_n, gpu_n);
+    param.sched = scheduler.sched;
+    // RCCLCHECK(hipMemcpy(param->sched, scheduler.sched, sizeof(struct scheduling_result_t), hipMemcpyHostToDevice));
 
-    // // verify correctness
-    // verify_correctness(&param, rank, gpu_n * server_n, comm, stream);
+    // verify correctness
+    verify_correctness(&param, rank, gpu_n * server_n, comm, stream);
 
-    // free_buffer(&param);
+    free_buffer(&param);
 
     delete[] workload;
     free_global_scheduler(&scheduler);
-
 
     NCCLCHECK(ncclCommFinalize(comm));
     NCCLCHECK(ncclCommDestroy(comm));

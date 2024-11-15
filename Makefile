@@ -52,9 +52,7 @@ $(BUILD_DIR)/alltoall_global_scheduler.o: ${SRC_DIR}/alltoall_global_scheduler.c
 
 
 run:
-	mpirun --allow-run-as-root -np 8 $(BUILD_DIR)/$(TARGET)
-
-
+	mpirun --allow-run-as-root -hostfile ~/hostfile -map-by ppr:8:node --bind-to numa -mca pml ob1 -mca btl ^openib -mca btl_tcp_if_include ens50f0 -x PATH -x LD_LIBRARY_PATH=/opt/rocm-6.2.0/lib:$LD_LIBRARY_PATH -x NCCL_SOCKET_IFNAME=ens50f0 -x LD_PRELOAD=~/rccl-alltoall/rccl/build/librccl.so:$LD_PRELOAD -x NCCL_DEBUG=WARN -x NCCL_DEBUG_SUBSYS=INIT,GRAPH -x HSA_FORCE_FINE_GRAIN_PCIE=1 -x NCCL_MIN_NCHANNELS=32 -x NCCL_IB_PCI_RELAXED_ORDERING=1 -x NCCL_NET_GDR_LEVEL=3 -x CUDA_DEVICE_ORDER=PCI_BUS_ID -x NCCL_IBEXT_DISABLE=1 -x NCCL_PROTO=Simple  $(BUILD_DIR)/$(TARGET)
 
 clean:
 	@echo "Cleaning FastAll2All"
