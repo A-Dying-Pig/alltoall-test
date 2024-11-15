@@ -2,8 +2,8 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
-#include <alltoall_global_scheduler.h>
-#include <alltoall_local_scheduler.h>
+#include <fast_alltoall/alltoall_global_scheduler.h>
+#include <fast_alltoall/alltoall_local_scheduler.h>
 #include <hip/hip_runtime.h>
 #include <rccl/rccl.h>
 #include <ctime>
@@ -198,11 +198,12 @@ int main(int argc, char* argv[]) {
     //let rank 0 process generate a random workload
     uint * workload = new uint[nranks * nranks];
     if (rank == 0) uniform_distribution(workload, nranks, 1024);
-    MPI_Bcast(&workload, nranks * nranks * sizeof(uint), MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(workload, nranks * nranks * sizeof(uint), MPI_BYTE, 0, MPI_COMM_WORLD);
     MPI_Barrier(MPI_COMM_WORLD);
 
     std::cout << "receive demand matrix from rank " << rank << std::endl;
     print_matrix(workload, nranks, nranks);
+    MPI_Barrier(MPI_COMM_WORLD);
 
     delete[] workload;
 
