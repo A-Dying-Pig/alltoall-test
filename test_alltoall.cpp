@@ -213,36 +213,37 @@ int main(int argc, char* argv[]) {
     // Get the rank of the process
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    hipSetDevice(rank);
-
     // Print off a hello world message
-    std::cout << "Hello world from rank " << rank << " out of " << nranks << " ranks" << std::endl;
+    int dev_n = 0;
+    RCCLCHECK(hipGetDeviceCount(&dev_n));
+    std::cout << "Hello world from rank " << rank << " out of " << nranks << " ranks, dev n: " << dev_n << std::endl;
+    RCCLCHECK(hipSetDevice(rank % dev_n));
 
     // Initialize Communicator
     ncclComm_t comm;
     ncclUniqueId ncclId;
-    if (rank ==0) NCCLCHECK(ncclGetUniqueId(&ncclId));
+    if (rank == 0) NCCLCHECK(ncclGetUniqueId(&ncclId));
     MPI_Bcast(&ncclId, sizeof(ncclId), MPI_BYTE, 0, MPI_COMM_WORLD);
     NCCLCHECK(ncclCommInitRank(&comm, nranks, ncclId, rank));
     hipStream_t stream;
-    RCCLCHECK(hipStreamCreate(&stream));
+    RCCLCHECK(hipStreamCreateWithFlags(&stream, hipStreamNonBlocking));
+
 
     //let rank 0 process generate a random workload
     uint * workload = new uint[nranks * nranks];
     if (rank == 0) uniform_distribution(workload, nranks, 1024);
     MPI_Bcast(workload, nranks * nranks * sizeof(uint), MPI_BYTE, 0, MPI_COMM_WORLD);
-    MPI_Barrier(MPI_COMM_WORLD);
 
     std::cout << "receive demand matrix from rank " << rank << std::endl;
     print_matrix(workload, nranks, nranks);
-    MPI_Barrier(MPI_COMM_WORLD);
 
 
     // scheduler is deterministic given a workload
-    struct GlobalScheduler scheduler;
     uint server_n = 2, gpu_n = 8;
+    struct GlobalScheduler scheduler;
     init_global_scheduler(&scheduler, server_n, gpu_n, workload);
     run_scheduler(&scheduler);
+    std::cout << "scheduling finished!" << std::endl;
 
     struct alltoall_parameters param;
     allocate_device_memory(&param, server_n, gpu_n);
