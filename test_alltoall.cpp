@@ -119,35 +119,31 @@ void allocate_device_memory(struct alltoall_parameters * param, uint server_n, u
     RCCLCHECK(hipMalloc(&param->recvbuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
     RCCLCHECK(hipMalloc(&param->tempbuff, 2 * gpu_n * gpu_n * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
     RCCLCHECK(hipMalloc(&param->syncbuff, 2 * dim * data_type_size));
-    param->verifybuff = malloc(dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size);
-    RCCLCHECK(hipMalloc(&param->sendcount, gpu_n * dim * sizeof(size_t)));
-    RCCLCHECK(hipMalloc(&param->sendpos, gpu_n * dim * sizeof(size_t)));
-    RCCLCHECK(hipMalloc(&param->recvcount, dim * sizeof(size_t)));
-    RCCLCHECK(hipMalloc(&param->recvpos, dim * sizeof(size_t)));
+    RCCLCHECK(hipMallocManaged(&param->verifybuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
+    RCCLCHECK(hipMallocManaged(&param->sendcount, gpu_n * dim * sizeof(size_t)));
+    RCCLCHECK(hipMallocManaged(&param->sendpos, gpu_n * dim * sizeof(size_t)));
+    RCCLCHECK(hipMallocManaged(&param->recvcount, dim * sizeof(size_t)));
+    RCCLCHECK(hipMallocManaged(&param->recvpos, dim * sizeof(size_t)));
     // RCCLCHECK(hipMalloc(&param->sched, sizeof(struct scheduling_result_t)));
 }
 
 void initialize_buffer(struct alltoall_parameters * param, uint* workload, uint rank, uint server_n, uint gpu_n){
     uint dim = gpu_n * server_n;
     uint local_gpu_id = rank % gpu_n;
-    size_t * host_sendcount = new size_t[ gpu_n * dim ];
-    size_t * host_recvcount = new size_t[ dim ];
     uint data_type_size = sizeof(int32_t);
-    memset(host_sendcount, 0, sizeof(size_t) * gpu_n * dim);
-    memset(host_recvcount, 0, sizeof(size_t) * dim);
+    RCCLCHECK(hipMemset(param->sendcount, 0, sizeof(size_t) * gpu_n * dim));
+    RCCLCHECK(hipMemset(param->recvcount, 0, sizeof(size_t) * dim));
     for (uint i = 0; i < dim; i++){
-        host_sendcount[i * gpu_n + local_gpu_id] = workload[rank * dim + i];
-        host_recvcount[i] = workload[i * dim + rank];
+        param->sendcount[i * gpu_n + local_gpu_id] = workload[rank * dim + i];
+        param->recvcount[i] = workload[i * dim + rank];
     }
-    RCCLCHECK(hipMemcpy(param->sendcount, host_sendcount, sizeof(size_t) * gpu_n * dim, hipMemcpyHostToDevice));
-    RCCLCHECK(hipMemcpy(param->recvcount, host_recvcount, sizeof(size_t) * dim, hipMemcpyHostToDevice));
     RCCLCHECK(hipMemset(param->sendpos, 0, gpu_n * dim * sizeof(size_t)));
     RCCLCHECK(hipMemset(param->recvpos, 0, dim * sizeof(size_t)));
     RCCLCHECK(hipMemset(param->recvbuff, 0, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
     int32_t * host_sendbuff = new int32_t[gpu_n * dim * MAX_BUFFER_SIZE_PER_RANK];
     memset((void *)host_sendbuff, 0, gpu_n * dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size);
     for (uint i = 0; i < dim; i ++){
-        for (uint sz = 0; sz < host_sendcount[i * gpu_n + local_gpu_id]; sz++){
+        for (uint sz = 0; sz < param->sendcount[i * gpu_n + local_gpu_id]; sz++){
             int32_t unique_data = ((rank & 0xff) << 24) + ((i & 0xff) << 16) + (sz & 0xffff);
             host_sendbuff[i * gpu_n * MAX_BUFFER_SIZE_PER_RANK + local_gpu_id * MAX_BUFFER_SIZE_PER_RANK + sz] = unique_data;
         }
@@ -161,9 +157,6 @@ void initialize_buffer(struct alltoall_parameters * param, uint* workload, uint 
             vb[i * MAX_BUFFER_SIZE_PER_RANK + sz] = unique_data;
         }
     }
-    delete[] host_sendcount;
-    delete[] host_recvcount;
-    delete[] host_sendbuff;
 }
 
 void free_buffer(struct alltoall_parameters * param){
@@ -197,7 +190,8 @@ void verify_correctness(struct alltoall_parameters * param, uint rank, uint dim,
         stream));
     RCCLCHECK(hipDeviceSynchronize());
     uint data_type_size = sizeof(int32_t);
-    void * host_recvbuff = malloc(dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size);
+    void * host_recvbuff;
+    hipMallocManaged(&host_recvbuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size);
     RCCLCHECK(hipMemcpy(host_recvbuff, param->recvbuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size, hipMemcpyDeviceToHost));
     std::cout << "verification: " << (0 == memcmp(host_recvbuff, param->verifybuff,  dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size)) << std::endl;
 }
@@ -243,6 +237,12 @@ int main(int argc, char* argv[]) {
     struct GlobalScheduler scheduler;
     init_global_scheduler(&scheduler, server_n, gpu_n, workload);
     run_scheduler(&scheduler);
+    uint server_id = 1;
+    for (uint r = 0; r < gpu_n; r++){
+    uint global_comm_gpu = server_id * gpu_n + r;
+    size_t send_data_sz = (scheduler.sched -> intrinsic_ata)[server_id][gpu_n + r];
+    std::cout << "send data sz: " << send_data_sz << std::endl;
+    }
     std::cout << "scheduling finished!" << std::endl;
 
     struct alltoall_parameters param;
@@ -252,7 +252,9 @@ int main(int argc, char* argv[]) {
     // RCCLCHECK(hipMemcpy(param->sched, scheduler.sched, sizeof(struct scheduling_result_t), hipMemcpyHostToDevice));
 
     // verify correctness
+    std::cout << "start testing: correctness" << std::endl;
     verify_correctness(&param, rank, gpu_n * server_n, comm, stream);
+    std::cout <<"correctness verified" << std::endl;
 
     free_buffer(&param);
 
