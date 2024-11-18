@@ -279,6 +279,7 @@ int main(int argc, char* argv[]) {
     scheduler.sched->rankid = rank;
     std::cout << "Rank " << rank << " finishes scheduling!" << std::endl;
 
+
     struct alltoall_parameters param;
     allocate_device_memory(&param, server_n, gpu_n);
     initialize_buffer(&param, workload, rank, server_n, gpu_n);
@@ -294,6 +295,7 @@ int main(int argc, char* argv[]) {
 
     std::cout << "TESTING PERFORMANCE, rank: " << rank << std::endl;
     // perf_v2(&param, comm, stream, buff_size);
+
 
     free_buffer(&param);
 
