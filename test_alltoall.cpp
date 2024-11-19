@@ -8,6 +8,7 @@
 #include <rccl/rccl.h>
 #include <ctime>
 #include <nccl.h>
+#include <iomanip>
 
 
 #define NCCLCHECK(cmd) do {                         \
@@ -22,16 +23,17 @@
 #define RCCLCHECK(cmd) do {                         \
   hipError_t res = cmd;                           \
   if (res != hipSuccess) {                         \
-    printf("error when executing cmd:%u",cmd);      \
+    printf("error when executing cmd: %u, %s\n",cmd,      \
+            hipGetErrorString(res));                   \
     exit(1);                                      \
   }                                                 \
 } while(0)
 
 void uniform_distribution(uint * workload, uint nrank, uint mean){
-    uint bound = MIN(MAX_BUFFER_SIZE_PER_RANK, mean * 2);
+    uint bound = mean * 2;
     for (uint i = 0; i < nrank; i++){
         for (uint j = 0; j < nrank; j++){
-            workload[i * nrank + j] = rand() % bound;
+            workload[i * nrank + j] = 1;
         }
     }
     // clean the diagnal
@@ -53,25 +55,70 @@ struct alltoall_parameters{
     struct scheduling_result_t * sched;
 };
 
-void allocate_device_memory(struct alltoall_parameters * param, uint server_n, uint gpu_n){
+
+void print_sendbuffs(void * send_buff, uint MAX_BUFFER_SIZE_PER_RANK, uint dim, uint gpu_n, uint rank){
+    std::cout << "send buffs: BUFFER_SIZE_PER_RANK " << MAX_BUFFER_SIZE_PER_RANK << ", rank " << rank << ", dim: " << dim << std::endl;
+    for (uint j = 0; j < dim; j++){
+        for (uint k = 0; k < gpu_n; k++){
+            for (uint z = 0; z < MAX_BUFFER_SIZE_PER_RANK; z++){
+                int32_t * ptr = (int32_t *) send_buff + j * gpu_n * MAX_BUFFER_SIZE_PER_RANK + k * MAX_BUFFER_SIZE_PER_RANK + z;
+                std::cout << hex << std::setfill('0') << std::setw(8) << * ptr;
+            }
+            std::cout << "|";
+        }
+        std::cout << "  ";
+    }
+    std::cout << dec << std::endl;
+
+}
+
+void print_recvbuffs(void * recv_buff, uint MAX_BUFFER_SIZE_PER_RANK, uint dim, uint rank){
+    std::cout << "recv buffs: BUFFER_SIZE_PER_RANK " << MAX_BUFFER_SIZE_PER_RANK << ", rank " << rank << ", dim: " << dim << std::endl;
+    for (uint j = 0; j < dim; j++){
+        for (uint z = 0; z < MAX_BUFFER_SIZE_PER_RANK; z++){
+            int32_t * ptr = (int32_t *) recv_buff + j * MAX_BUFFER_SIZE_PER_RANK + z;
+            std::cout << hex << std::setfill('0') << std::setw(8)<< *ptr;
+        }
+        std::cout << " ";
+    }
+    std::cout << dec << std::endl;
+}
+
+struct alltoall_parameters allocate_device_memory(uint MAX_BUFFER_SIZE_PER_RANK, uint server_n, uint gpu_n){
     uint dim = server_n * gpu_n;
     // test performance with int32 data type
     uint data_type_size = sizeof(int32_t);
-    RCCLCHECK(hipMalloc(&param->sendbuff, gpu_n * dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
-    RCCLCHECK(hipMalloc(&param->recvbuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
-    RCCLCHECK(hipMalloc(&param->tempbuff, 2 * gpu_n * gpu_n * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
-    RCCLCHECK(hipMallocManaged(&param->verifybuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
-    RCCLCHECK(hipMallocManaged(&param->sendcount, gpu_n * dim * sizeof(size_t)));
-    RCCLCHECK(hipMallocManaged(&param->sendpos, gpu_n * dim * sizeof(size_t)));
-    RCCLCHECK(hipMallocManaged(&param->recvcount, dim * sizeof(size_t)));
-    RCCLCHECK(hipMallocManaged(&param->recvpos, dim * sizeof(size_t)));
-    // RCCLCHECK(hipMalloc(&param->sched, sizeof(struct scheduling_result_t)));
+    void * verifybuff, * sendbuff, * recvbuff, * tempbuff;
+    size_t * sendcount, * sendpos, * recvcount, *recvpos;
+    RCCLCHECK(hipMalloc((void **)&sendbuff, gpu_n * dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
+    RCCLCHECK(hipMalloc((void **)&recvbuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
+    RCCLCHECK(hipMalloc((void **)&tempbuff, 2 * gpu_n * gpu_n * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
+    RCCLCHECK(hipMallocManaged((void **)&verifybuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
+    RCCLCHECK(hipMallocManaged((void **)&sendcount, gpu_n * dim * sizeof(size_t)));
+    RCCLCHECK(hipMallocManaged((void **)&sendpos, gpu_n * dim * sizeof(size_t)));
+    RCCLCHECK(hipMallocManaged((void **)&recvcount, dim * sizeof(size_t)));
+    RCCLCHECK(hipMallocManaged((void **)&recvpos, dim * sizeof(size_t)));
+    RCCLCHECK(hipDeviceSynchronize());
+    struct alltoall_parameters ret = {
+        .sendbuff = sendbuff,
+        .recvbuff = recvbuff,
+        .tempbuff = tempbuff,
+        .verifybuff = verifybuff,
+        .sendcount = sendcount,
+        .sendpos = sendpos,
+        .recvcount = recvcount,
+        .recvpos = recvpos,
+        .sched = NULL
+    };
+    return ret;
 }
 
 void initialize_buffer(struct alltoall_parameters * param, uint* workload, uint rank, uint server_n, uint gpu_n){
     uint dim = gpu_n * server_n;
     uint local_gpu_id = rank % gpu_n;
-    uint data_type_size = sizeof(int32_t);
+    uint data_type_size = sizeof(int32_t),
+        MAX_BUFFER_SIZE_PER_RANK = param->sched->MAX_BUFFER_SIZE_PER_RANK;
+    RCCLCHECK(hipSetDevice(rank % gpu_n));
     // std:: cout << "Rank " << rank <<" local id: " << local_gpu_id << " dim: " << dim << std::endl;
     RCCLCHECK(hipMemset(param->sendcount, 0, sizeof(size_t) * gpu_n * dim));
     RCCLCHECK(hipMemset(param->recvcount, 0, sizeof(size_t) * dim));
@@ -99,12 +146,27 @@ void initialize_buffer(struct alltoall_parameters * param, uint* workload, uint 
             vb[i * MAX_BUFFER_SIZE_PER_RANK + sz] = unique_data;
         }
     }
+    // print_sendbuffs(host_sendbuff, MAX_BUFFER_SIZE_PER_RANK, dim, gpu_n, rank);
+    print_recvbuffs(param->verifybuff, MAX_BUFFER_SIZE_PER_RANK, dim, rank);
+    RCCLCHECK(hipDeviceSynchronize());
+    std:: cout << "rank " << rank << ": sendcount:";
+    for (uint i = 0; i < dim; i ++){
+        std::cout << param->sendcount[i * gpu_n + local_gpu_id] << " ";
+    }
+    std::cout << endl;
+    std:: cout << "rank " << rank << ": recvcount:";
+    for (uint i = 0; i < dim; i ++){
+        std::cout << param->recvcount[i] << " ";
+    }
+    std::cout << endl;
+
 }
 
 
 void reset_buffer_counter(struct alltoall_parameters * param, uint server_n, uint gpu_n){
     uint dim = server_n * gpu_n;
-    uint data_type_size = sizeof(int32_t);
+    uint data_type_size = sizeof(int32_t),
+    MAX_BUFFER_SIZE_PER_RANK = param->sched->MAX_BUFFER_SIZE_PER_RANK;
     RCCLCHECK(hipMemset(param->recvbuff, 0, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
     RCCLCHECK(hipMemset(param->sendpos, 0, gpu_n * dim * sizeof(size_t)));
     RCCLCHECK(hipMemset(param->recvpos, 0, dim * sizeof(size_t)));
@@ -123,8 +185,10 @@ void free_buffer(struct alltoall_parameters * param){
 }
 
 
+
 void verify_correctness_v2(struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream){
-    uint dim = param->sched->gpu_n * param->sched->server_n;
+    uint dim = param->sched->gpu_n * param->sched->server_n,
+        MAX_BUFFER_SIZE_PER_RANK = param->sched->MAX_BUFFER_SIZE_PER_RANK;
     MPI_Barrier(MPI_COMM_WORLD);
     NCCLCHECK(ncclAllToAllv2(
         param->sendbuff,
@@ -159,6 +223,7 @@ void perf_v2(struct alltoall_parameters * param, ncclComm_t comm, hipStream_t st
         NCCLCHECK(ncclAllToAllv0(
             param->sched->rankid,
             param->sched->gpu_n,
+            param->sched->MAX_BUFFER_SIZE_PER_RANK,
             param->sendbuff,
             param->sendcount,
             param->sendpos,
@@ -175,6 +240,7 @@ void perf_v2(struct alltoall_parameters * param, ncclComm_t comm, hipStream_t st
         NCCLCHECK(ncclAllToAllv0(
             param->sched->rankid,
             param->sched->gpu_n,
+            param->sched->MAX_BUFFER_SIZE_PER_RANK,
             param->sendbuff,
             param->sendcount,
             param->sendpos,
@@ -207,11 +273,13 @@ void perf_v2(struct alltoall_parameters * param, ncclComm_t comm, hipStream_t st
 }
 
 void verify_correctness_v0(struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream){
-    uint dim = param->sched->gpu_n * param->sched->server_n;
+    uint dim = param->sched->gpu_n * param->sched->server_n,
+    MAX_BUFFER_SIZE_PER_RANK = param->sched->MAX_BUFFER_SIZE_PER_RANK;
     MPI_Barrier(MPI_COMM_WORLD);
     NCCLCHECK(ncclAllToAllv0(
         param->sched->rankid,
         param->sched->gpu_n,
+        param->sched->MAX_BUFFER_SIZE_PER_RANK,
         param->sendbuff,
         param->sendcount,
         param->sendpos,
@@ -222,10 +290,20 @@ void verify_correctness_v0(struct alltoall_parameters * param, ncclComm_t comm, 
         comm,
         stream));
     RCCLCHECK(hipDeviceSynchronize());
+    hipError_t err;
+    bool finished = false;
+    while(!finished){
+        err = hipStreamQuery(stream);
+        if (err == hipSuccess) {
+            finished = true;
+            break;
+        }
+    }
     uint data_type_size = sizeof(int32_t);
     void * host_recvbuff;
     hipMallocManaged(&host_recvbuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size);
     RCCLCHECK(hipMemcpy(host_recvbuff, param->recvbuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size, hipMemcpyDeviceToHost));
+    print_recvbuffs(host_recvbuff, MAX_BUFFER_SIZE_PER_RANK, dim, param->sched->rankid);
     std::cout << "V0 correctness: " << (0 == memcmp(host_recvbuff, param->verifybuff,  dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size) ? "True" : "False") << std::endl;
 }
 
@@ -257,9 +335,10 @@ int main(int argc, char* argv[]) {
     RCCLCHECK(hipStreamCreateWithFlags(&stream, hipStreamNonBlocking));
 
 
+
     //let rank 0 process generate a random workload
     uint * workload = new uint[nranks * nranks];
-    if (rank == 0) uniform_distribution(workload, nranks, 1024);
+    if (rank == 0) uniform_distribution(workload, nranks, 1);
     MPI_Bcast(workload, nranks * nranks * sizeof(uint), MPI_BYTE, 0, MPI_COMM_WORLD);
     std::cout << "Rank " << rank << " receive demand matrix" << std::endl;
     uint buff_size = 0;
@@ -277,14 +356,15 @@ int main(int argc, char* argv[]) {
     init_global_scheduler(&scheduler, server_n, gpu_n, workload);
     run_scheduler(&scheduler);
     scheduler.sched->rankid = rank;
-    std::cout << "Rank " << rank << " finishes scheduling!" << std::endl;
+    scheduler.sched->MAX_BUFFER_SIZE_PER_RANK = 2,
+    std::cout << "Rank " << rank << " scheduling succeeds" << std::endl;
 
 
-    struct alltoall_parameters param;
-    allocate_device_memory(&param, server_n, gpu_n);
-    initialize_buffer(&param, workload, rank, server_n, gpu_n);
+    RCCLCHECK(hipSetDevice(rank % gpu_n));
+    struct alltoall_parameters param = allocate_device_memory(scheduler.sched->MAX_BUFFER_SIZE_PER_RANK, server_n, gpu_n);
     param.sched = scheduler.sched;
-    std::cout << "Rank " << rank << " initializes buffers!" << std::endl;
+    initialize_buffer(&param, workload, rank, server_n, gpu_n);
+    std::cout << "Rank " << rank << " buffers initialization succeeds" << std::endl;
 
 
     // verify correctness
