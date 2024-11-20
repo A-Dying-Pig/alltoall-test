@@ -113,6 +113,18 @@ struct alltoall_parameters allocate_device_memory(uint MAX_BUFFER_SIZE_PER_RANK,
     return ret;
 }
 
+__global__ void identity_kernel(int32_t *sendbuff, size_t count) {
+    int i0 = blockIdx.x*(count/gridDim.x);
+    i0 += blockIdx.x < count%gridDim.x ? blockIdx.x : count%gridDim.x;
+    int i1 = (blockIdx.x+1)*(count/gridDim.x);
+    i1 += blockIdx.x+1 < count%gridDim.x ? blockIdx.x+1 : count%gridDim.x;
+    int i = i0 + threadIdx.x;
+    while(i < i1) {
+        sendbuff[i] = sendbuff[i] * 1;
+        i += blockDim.x;
+    }
+}
+
 void initialize_buffer(struct alltoall_parameters * param, uint* workload, uint rank, uint server_n, uint gpu_n){
     uint dim = gpu_n * server_n;
     uint local_gpu_id = rank % gpu_n;
@@ -149,16 +161,19 @@ void initialize_buffer(struct alltoall_parameters * param, uint* workload, uint 
     // print_sendbuffs(host_sendbuff, MAX_BUFFER_SIZE_PER_RANK, dim, gpu_n, rank);
     print_recvbuffs(param->verifybuff, MAX_BUFFER_SIZE_PER_RANK, dim, rank);
     RCCLCHECK(hipDeviceSynchronize());
-    std:: cout << "rank " << rank << ": sendcount:";
-    for (uint i = 0; i < dim; i ++){
-        std::cout << param->sendcount[i * gpu_n + local_gpu_id] << " ";
-    }
-    std::cout << endl;
-    std:: cout << "rank " << rank << ": recvcount:";
-    for (uint i = 0; i < dim; i ++){
-        std::cout << param->recvcount[i] << " ";
-    }
-    std::cout << endl;
+    // int sendbuff_sz = dim * gpu_n * MAX_BUFFER_SIZE_PER_RANK;
+    // int block_n = std::min<int>(32, (sendbuff_sz + 4*512-1)/(4*512));
+    // identity_kernel<<<block_n, 512, 0, hipStreamDefault>>>((int32_t*)param->sendbuff, sendbuff_sz);
+    // std:: cout << "rank " << rank << ": sendcount:";
+    // for (uint i = 0; i < dim; i ++){
+    //     std::cout << param->sendcount[i * gpu_n + local_gpu_id] << " ";
+    // }
+    // std::cout << endl;
+    // std:: cout << "rank " << rank << ": recvcount:";
+    // for (uint i = 0; i < dim; i ++){
+    //     std::cout << param->recvcount[i] << " ";
+    // }
+    // std::cout << endl;
 
 }
 
@@ -207,6 +222,7 @@ void verify_correctness_v2(struct alltoall_parameters * param, ncclComm_t comm, 
     void * host_recvbuff;
     hipMallocManaged(&host_recvbuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size);
     RCCLCHECK(hipMemcpy(host_recvbuff, param->recvbuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size, hipMemcpyDeviceToHost));
+    print_recvbuffs(host_recvbuff, MAX_BUFFER_SIZE_PER_RANK, dim, param->sched->rankid);
     std::cout << "Rank " << param->sched->rankid << " V2 correctness: " << (0 == memcmp(host_recvbuff, param->verifybuff,  dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size) ? "True" : "False") << std::endl;
 }
 
@@ -348,7 +364,7 @@ int main(int argc, char* argv[]) {
         }
     }
     buff_size *= sizeof(int32_t);
-    // print_matrix(workload, nranks, nranks);
+    print_matrix(workload, nranks, nranks);
 
     // scheduler is deterministic given a workload
     uint server_n = 2, gpu_n = 8;
@@ -358,6 +374,24 @@ int main(int argc, char* argv[]) {
     scheduler.sched->rankid = rank;
     scheduler.sched->MAX_BUFFER_SIZE_PER_RANK = 2,
     std::cout << "Rank " << rank << " scheduling succeeds" << std::endl;
+
+    // if (rank == 0){
+    //     for (uint i = 0; i < server_n; i++){
+    //         std::cout << "src server id " << i << std::endl;
+    //         for (uint j = 0; j < server_n; j++){
+    //             cout << "dst server id " << j << std::endl;
+    //             for (uint p = 0; p < gpu_n; p++){
+    //                 for(uint z = 0; z < gpu_n; z++){
+    //                     for (uint cnl = 0; cnl < gpu_n; cnl++)
+    //                     std::cout << scheduler.sched->balance[i][j][p * gpu_n + z].sz[cnl] << " ";
+    //                 }
+    //                 std::cout << "|";
+    //             }
+
+    //             std::cout << std::endl;
+    //         }
+    //     }
+    // }
 
 
     RCCLCHECK(hipSetDevice(rank % gpu_n));
@@ -369,9 +403,10 @@ int main(int argc, char* argv[]) {
 
     // verify correctness
     std::cout << "TESTING CORRECTNESS, rank: " << rank << std::endl;
-    // verify_correctness_v2(&param, comm, stream);
-    // reset_buffer_counter(&param, server_n, gpu_n);
+
     verify_correctness_v0(&param, comm, stream);
+    // reset_buffer_counter(&param, server_n, gpu_n);
+    // verify_correctness_v2(&param, comm, stream);
 
     std::cout << "TESTING PERFORMANCE, rank: " << rank << std::endl;
     // perf_v2(&param, comm, stream, buff_size);
