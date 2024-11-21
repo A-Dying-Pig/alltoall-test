@@ -226,15 +226,13 @@ void verify_correctness_v2(struct alltoall_parameters * param, ncclComm_t comm, 
     std::cout << "Rank " << param->sched->rankid << " V2 correctness: " << (0 == memcmp(host_recvbuff, param->verifybuff,  dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size) ? "True" : "False") << std::endl;
 }
 
-void perf_v2(struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream, uint buff_size){
+void perf_v0(uint warmup_iters, uint perf_iters, struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream, uint buff_size){
 
     hipEvent_t start_event, end_event;
     RCCLCHECK(hipEventCreate(&start_event));
     RCCLCHECK(hipEventCreate(&end_event));
 
     MPI_Barrier(MPI_COMM_WORLD);
-
-    uint warmup_iters = 20, perf_iters = 100;
     for (int i = 0; i < warmup_iters; ++i) {
         NCCLCHECK(ncclAllToAllv0(
             param->sched->rankid,
@@ -279,14 +277,70 @@ void perf_v2(struct alltoall_parameters * param, ncclComm_t comm, hipStream_t st
     RCCLCHECK(hipEventDestroy(start_event));
     RCCLCHECK(hipEventDestroy(end_event));
     if (param->sched->rankid == 0) {
+        std::cout << "AlltoAllv0 perf ("
+                  << ",buff_size=" << buff_size
+                  << ") finished: time=" << avg_time * 1e3 << "us "
+                  << "algbw=" << algbw << "GBps" << std::endl;
+    }
+}
+
+
+void perf_v2(uint warmup_iters, uint perf_iters, struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream, uint buff_size){
+
+    hipEvent_t start_event, end_event;
+    RCCLCHECK(hipEventCreate(&start_event));
+    RCCLCHECK(hipEventCreate(&end_event));
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    for (int i = 0; i < warmup_iters; ++i) {
+        NCCLCHECK(ncclAllToAllv2(
+            param->sendbuff,
+            param->sendcount,
+            param->sendpos,
+            param->recvbuff,
+            param->recvcount,
+            param->recvpos,
+            param->tempbuff,
+            param->sched,
+            ncclInt32,
+            comm,
+            stream));
+        reset_buffer_counter(param, param->sched->server_n, param->sched->gpu_n);
+    }
+    RCCLCHECK(hipEventRecord(start_event));
+    for (int i = 0; i < perf_iters; ++i) {
+        NCCLCHECK(ncclAllToAllv2(
+            param->sendbuff,
+            param->sendcount,
+            param->sendpos,
+            param->recvbuff,
+            param->recvcount,
+            param->recvpos,
+            param->tempbuff,
+            param->sched,
+            ncclInt32,
+            comm,
+            stream));
+        reset_buffer_counter(param, param->sched->server_n, param->sched->gpu_n);
+    }
+    RCCLCHECK(hipEventRecord(end_event));
+    RCCLCHECK(hipDeviceSynchronize());
+
+    float elapsed_time;
+    RCCLCHECK(hipEventElapsedTime(&elapsed_time, start_event, end_event));
+    double avg_time = (double) elapsed_time / perf_iters;
+    double algbw = (double) buff_size / (avg_time * 1e-3) / 1e9;
+
+    RCCLCHECK(hipEventDestroy(start_event));
+    RCCLCHECK(hipEventDestroy(end_event));
+    if (param->sched->rankid == 0) {
         std::cout << "AlltoAllv2 perf ("
                   << ",buff_size=" << buff_size
                   << ") finished: time=" << avg_time * 1e3 << "us "
                   << "algbw=" << algbw << "GBps" << std::endl;
     }
-
-
 }
+
 
 void verify_correctness_v0(struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream){
     uint dim = param->sched->gpu_n * param->sched->server_n,
@@ -404,12 +458,14 @@ int main(int argc, char* argv[]) {
     // verify correctness
     std::cout << "TESTING CORRECTNESS, rank: " << rank << std::endl;
 
-    verify_correctness_v0(&param, comm, stream);
+    // verify_correctness_v0(&param, comm, stream);
     // reset_buffer_counter(&param, server_n, gpu_n);
-    // verify_correctness_v2(&param, comm, stream);
+    verify_correctness_v2(&param, comm, stream);
 
-    std::cout << "TESTING PERFORMANCE, rank: " << rank << std::endl;
-    // perf_v2(&param, comm, stream, buff_size);
+    uint warmup_iters = 10, perf_iters = 20;
+    std::cout << "TESTING PERFORMANCE, rank: " << rank << ", warmup iters: " << warmup_iters <<", test iters: " << perf_iters << std::endl;
+    // perf_v0(warmup_iters, perf_iters, &param, comm, stream, buff_size);
+    // perf_v2(warmup_iters, perf_iters, &param, comm, stream, buff_size);
 
 
     free_buffer(&param);
