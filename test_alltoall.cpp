@@ -33,7 +33,7 @@ void uniform_distribution(uint * workload, uint nrank, uint mean){
     uint bound = mean * 2;
     for (uint i = 0; i < nrank; i++){
         for (uint j = 0; j < nrank; j++){
-            workload[i * nrank + j] = 1;
+            workload[i * nrank + j] = rand() % bound;
         }
     }
     // clean the diagnal
@@ -159,7 +159,7 @@ void initialize_buffer(struct alltoall_parameters * param, uint* workload, uint 
         }
     }
     // print_sendbuffs(host_sendbuff, MAX_BUFFER_SIZE_PER_RANK, dim, gpu_n, rank);
-    print_recvbuffs(param->verifybuff, MAX_BUFFER_SIZE_PER_RANK, dim, rank);
+    // print_recvbuffs(param->verifybuff, MAX_BUFFER_SIZE_PER_RANK, dim, rank);
     RCCLCHECK(hipDeviceSynchronize());
     // int sendbuff_sz = dim * gpu_n * MAX_BUFFER_SIZE_PER_RANK;
     // int block_n = std::min<int>(32, (sendbuff_sz + 4*512-1)/(4*512));
@@ -201,7 +201,7 @@ void free_buffer(struct alltoall_parameters * param){
 
 
 
-void verify_correctness_v2(struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream){
+bool verify_correctness_v2(struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream){
     uint dim = param->sched->gpu_n * param->sched->server_n,
         MAX_BUFFER_SIZE_PER_RANK = param->sched->MAX_BUFFER_SIZE_PER_RANK;
     MPI_Barrier(MPI_COMM_WORLD);
@@ -222,11 +222,11 @@ void verify_correctness_v2(struct alltoall_parameters * param, ncclComm_t comm, 
     void * host_recvbuff;
     hipMallocManaged(&host_recvbuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size);
     RCCLCHECK(hipMemcpy(host_recvbuff, param->recvbuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size, hipMemcpyDeviceToHost));
-    print_recvbuffs(host_recvbuff, MAX_BUFFER_SIZE_PER_RANK, dim, param->sched->rankid);
-    std::cout << "Rank " << param->sched->rankid << " V2 correctness: " << (0 == memcmp(host_recvbuff, param->verifybuff,  dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size) ? "True" : "False") << std::endl;
+    // print_recvbuffs(host_recvbuff, MAX_BUFFER_SIZE_PER_RANK, dim, param->sched->rankid);
+    return (0 == memcmp(host_recvbuff, param->verifybuff,  dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
 }
 
-void perf_v0(uint warmup_iters, uint perf_iters, struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream, uint buff_size){
+double perf_v0(uint warmup_iters, uint perf_iters, struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream, uint buff_size){
 
     hipEvent_t start_event, end_event;
     RCCLCHECK(hipEventCreate(&start_event));
@@ -276,16 +276,11 @@ void perf_v0(uint warmup_iters, uint perf_iters, struct alltoall_parameters * pa
 
     RCCLCHECK(hipEventDestroy(start_event));
     RCCLCHECK(hipEventDestroy(end_event));
-    if (param->sched->rankid == 0) {
-        std::cout << "AlltoAllv0 perf ("
-                  << ",buff_size=" << buff_size
-                  << ") finished: time=" << avg_time * 1e3 << "us "
-                  << "algbw=" << algbw << "GBps" << std::endl;
-    }
+    return algbw;
 }
 
 
-void perf_v2(uint warmup_iters, uint perf_iters, struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream, uint buff_size){
+double perf_v2(uint warmup_iters, uint perf_iters, struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream, uint buff_size){
 
     hipEvent_t start_event, end_event;
     RCCLCHECK(hipEventCreate(&start_event));
@@ -333,16 +328,11 @@ void perf_v2(uint warmup_iters, uint perf_iters, struct alltoall_parameters * pa
 
     RCCLCHECK(hipEventDestroy(start_event));
     RCCLCHECK(hipEventDestroy(end_event));
-    if (param->sched->rankid == 0) {
-        std::cout << "AlltoAllv2 perf ("
-                  << ",buff_size=" << buff_size
-                  << ") finished: time=" << avg_time * 1e3 << "us "
-                  << "algbw=" << algbw << "GBps" << std::endl;
-    }
+    return algbw;
 }
 
 
-void verify_correctness_v0(struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream){
+bool verify_correctness_v0(struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream){
     uint dim = param->sched->gpu_n * param->sched->server_n,
     MAX_BUFFER_SIZE_PER_RANK = param->sched->MAX_BUFFER_SIZE_PER_RANK;
     MPI_Barrier(MPI_COMM_WORLD);
@@ -373,9 +363,27 @@ void verify_correctness_v0(struct alltoall_parameters * param, ncclComm_t comm, 
     void * host_recvbuff;
     hipMallocManaged(&host_recvbuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size);
     RCCLCHECK(hipMemcpy(host_recvbuff, param->recvbuff, dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size, hipMemcpyDeviceToHost));
-    print_recvbuffs(host_recvbuff, MAX_BUFFER_SIZE_PER_RANK, dim, param->sched->rankid);
-    std::cout << "V0 correctness: " << (0 == memcmp(host_recvbuff, param->verifybuff,  dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size) ? "True" : "False") << std::endl;
+    // print_recvbuffs(host_recvbuff, MAX_BUFFER_SIZE_PER_RANK, dim, param->sched->rankid);
+    return (0 == memcmp(host_recvbuff, param->verifybuff,  dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
 }
+
+struct max_sum_ret_t{
+    uint max;
+    uint sum;
+};
+
+struct max_sum_ret_t max_sum_matrix(uint * workload, uint dim){
+    uint max = 0, sum = 0;
+    for (uint i = 0; i < dim; i ++){
+        for (uint j = 0; j < dim; j++){
+            max = MAX(max, workload[i *dim + j]);
+            sum += workload[i *dim + j];
+        }
+    }
+    struct max_sum_ret_t r = {.max = max, .sum = sum};
+    return r;
+}
+
 
 
 int main(int argc, char* argv[]) {
@@ -408,17 +416,12 @@ int main(int argc, char* argv[]) {
 
     //let rank 0 process generate a random workload
     uint * workload = new uint[nranks * nranks];
-    if (rank == 0) uniform_distribution(workload, nranks, 1);
+    if (rank == 0) uniform_distribution(workload, nranks, 102400);
     MPI_Bcast(workload, nranks * nranks * sizeof(uint), MPI_BYTE, 0, MPI_COMM_WORLD);
-    std::cout << "Rank " << rank << " receive demand matrix" << std::endl;
-    uint buff_size = 0;
-    for (uint i = 0; i < nranks; i++){
-        for (uint j = 0; j < nranks; j++){
-            buff_size += workload[i * nranks + j];
-        }
-    }
-    buff_size *= sizeof(int32_t);
-    print_matrix(workload, nranks, nranks);
+    // std::cout << "Rank " << rank << " receive demand matrix" << std::endl;
+    struct max_sum_ret_t workload_max_sum = max_sum_matrix(workload, nranks);
+    uint buff_size = workload_max_sum.sum * sizeof(int32_t);    // bytes
+    if (rank == 0) print_matrix(workload, nranks, nranks);
 
     // scheduler is deterministic given a workload
     uint server_n = 2, gpu_n = 8;
@@ -426,47 +429,36 @@ int main(int argc, char* argv[]) {
     init_global_scheduler(&scheduler, server_n, gpu_n, workload);
     run_scheduler(&scheduler);
     scheduler.sched->rankid = rank;
-    scheduler.sched->MAX_BUFFER_SIZE_PER_RANK = 2,
-    std::cout << "Rank " << rank << " scheduling succeeds" << std::endl;
-
-    // if (rank == 0){
-    //     for (uint i = 0; i < server_n; i++){
-    //         std::cout << "src server id " << i << std::endl;
-    //         for (uint j = 0; j < server_n; j++){
-    //             cout << "dst server id " << j << std::endl;
-    //             for (uint p = 0; p < gpu_n; p++){
-    //                 for(uint z = 0; z < gpu_n; z++){
-    //                     for (uint cnl = 0; cnl < gpu_n; cnl++)
-    //                     std::cout << scheduler.sched->balance[i][j][p * gpu_n + z].sz[cnl] << " ";
-    //                 }
-    //                 std::cout << "|";
-    //             }
-
-    //             std::cout << std::endl;
-    //         }
-    //     }
-    // }
-
+    scheduler.sched->MAX_BUFFER_SIZE_PER_RANK = workload_max_sum.max;
+    // std::cout << "Rank " << rank << " scheduling succeeds" << std::endl;
 
     RCCLCHECK(hipSetDevice(rank % gpu_n));
     struct alltoall_parameters param = allocate_device_memory(scheduler.sched->MAX_BUFFER_SIZE_PER_RANK, server_n, gpu_n);
     param.sched = scheduler.sched;
     initialize_buffer(&param, workload, rank, server_n, gpu_n);
-    std::cout << "Rank " << rank << " buffers initialization succeeds" << std::endl;
+    // std::cout << "Rank " << rank << " buffers initialization succeeds" << std::endl;
 
 
     // verify correctness
-    std::cout << "TESTING CORRECTNESS, rank: " << rank << std::endl;
+    if (rank == 0) std::cout << "TESTING CORRECTNESS" << std::endl;
+    int correctness_this_rank = verify_correctness_v2(&param, comm, stream);
+    int * correctness;
+    if (rank == 0) correctness = new int[nranks];
+    MPI_Gather(&correctness_this_rank, 1, MPI_INT, correctness, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    if (rank == 0){
+        int correctness_n = 0;
+        for (uint i = 0; i < nranks; i++) correctness_n += correctness[i];
+        std::cout << "CORRECTNESS: " << ((correctness_n == nranks) ? "succeed" : "fail") << std::endl;
+    }
 
-    // verify_correctness_v0(&param, comm, stream);
-    // reset_buffer_counter(&param, server_n, gpu_n);
-    verify_correctness_v2(&param, comm, stream);
 
     uint warmup_iters = 10, perf_iters = 20;
-    std::cout << "TESTING PERFORMANCE, rank: " << rank << ", warmup iters: " << warmup_iters <<", test iters: " << perf_iters << std::endl;
-    // perf_v0(warmup_iters, perf_iters, &param, comm, stream, buff_size);
-    // perf_v2(warmup_iters, perf_iters, &param, comm, stream, buff_size);
-
+    if (rank == 0) std::cout << "TESTING PERFORMANCE" << rank << ", warmup iters: " << warmup_iters <<", test iters: " << perf_iters << std::endl;
+    double v0_bw = perf_v0(warmup_iters, perf_iters, &param, comm, stream, buff_size);
+    double v2_bw = perf_v2(warmup_iters, perf_iters, &param, comm, stream, buff_size);
+    if (rank == 0){
+        std::cout << "Buff size: " << buff_size << " B, v0 algbw: " << v0_bw << " GBps, v2 algbw: " << v2_bw << " GBps, Speed up: " << v2_bw / v0_bw << std::endl;
+    }
 
     free_buffer(&param);
 
