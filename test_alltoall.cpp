@@ -226,7 +226,12 @@ bool verify_correctness_v2(struct alltoall_parameters * param, ncclComm_t comm, 
     return (0 == memcmp(host_recvbuff, param->verifybuff,  dim * MAX_BUFFER_SIZE_PER_RANK * data_type_size));
 }
 
-double perf_v0(uint warmup_iters, uint perf_iters, struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream, uint buff_size){
+struct perf_test_ret_t{
+    double algbw;
+    double time;
+};
+
+struct perf_test_ret_t perf_v0(uint warmup_iters, uint perf_iters, struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream, uint buff_size){
 
     hipEvent_t start_event, end_event;
     RCCLCHECK(hipEventCreate(&start_event));
@@ -272,15 +277,16 @@ double perf_v0(uint warmup_iters, uint perf_iters, struct alltoall_parameters * 
     float elapsed_time;
     RCCLCHECK(hipEventElapsedTime(&elapsed_time, start_event, end_event));
     double avg_time = (double) elapsed_time / perf_iters;
-    double algbw = (double) buff_size / (avg_time * 1e-3) / 1e9;
+    double algbw = (double) buff_size / (avg_time * 1e-3) / 1e9 / (param->sched->gpu_n * param->sched->server_n);
 
     RCCLCHECK(hipEventDestroy(start_event));
     RCCLCHECK(hipEventDestroy(end_event));
-    return algbw;
+    struct perf_test_ret_t r = {.algbw = algbw, .time = avg_time};
+    return r;
 }
 
 
-double perf_v2(uint warmup_iters, uint perf_iters, struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream, uint buff_size){
+struct perf_test_ret_t perf_v2(uint warmup_iters, uint perf_iters, struct alltoall_parameters * param, ncclComm_t comm, hipStream_t stream, uint buff_size){
 
     hipEvent_t start_event, end_event;
     RCCLCHECK(hipEventCreate(&start_event));
@@ -324,11 +330,12 @@ double perf_v2(uint warmup_iters, uint perf_iters, struct alltoall_parameters * 
     float elapsed_time;
     RCCLCHECK(hipEventElapsedTime(&elapsed_time, start_event, end_event));
     double avg_time = (double) elapsed_time / perf_iters;
-    double algbw = (double) buff_size / (avg_time * 1e-3) / 1e9;
+    double algbw = (double) buff_size / (avg_time * 1e-3) / 1e9 / (param->sched->gpu_n * param->sched->server_n);
 
     RCCLCHECK(hipEventDestroy(start_event));
     RCCLCHECK(hipEventDestroy(end_event));
-    return algbw;
+    struct perf_test_ret_t r = {.algbw = algbw, .time = avg_time};
+    return r;
 }
 
 
@@ -416,7 +423,7 @@ int main(int argc, char* argv[]) {
 
     //let rank 0 process generate a random workload
     uint * workload = new uint[nranks * nranks];
-    if (rank == 0) uniform_distribution(workload, nranks, 102400);
+    if (rank == 0) uniform_distribution(workload, nranks, 1024000);
     MPI_Bcast(workload, nranks * nranks * sizeof(uint), MPI_BYTE, 0, MPI_COMM_WORLD);
     // std::cout << "Rank " << rank << " receive demand matrix" << std::endl;
     struct max_sum_ret_t workload_max_sum = max_sum_matrix(workload, nranks);
@@ -452,12 +459,12 @@ int main(int argc, char* argv[]) {
     }
 
 
-    uint warmup_iters = 10, perf_iters = 20;
-    if (rank == 0) std::cout << "TESTING PERFORMANCE" << rank << ", warmup iters: " << warmup_iters <<", test iters: " << perf_iters << std::endl;
-    double v0_bw = perf_v0(warmup_iters, perf_iters, &param, comm, stream, buff_size);
-    double v2_bw = perf_v2(warmup_iters, perf_iters, &param, comm, stream, buff_size);
+    uint warmup_iters = 1, perf_iters = 1;
+    if (rank == 0) std::cout << "TESTING PERFORMANCE: warmup iters: " << warmup_iters <<", test iters: " << perf_iters << std::endl;
+    struct perf_test_ret_t v0_ret = perf_v0(warmup_iters, perf_iters, &param, comm, stream, buff_size);
+    struct perf_test_ret_t v2_ret = perf_v2(warmup_iters, perf_iters, &param, comm, stream, buff_size);
     if (rank == 0){
-        std::cout << "Buff size: " << buff_size << " B, v0 algbw: " << v0_bw << " GBps, v2 algbw: " << v2_bw << " GBps, Speed up: " << v2_bw / v0_bw << std::endl;
+        std::cout << "Buff size: " << buff_size << " B, v0 algbw: " << v0_ret.algbw << " GBps, v0 time: " << v0_ret.time << " ms, v2 algbw: " << v2_ret.algbw << " GBps, v2 time: " << v2_ret.time <<  " ms, Speed up: " << v2_ret.algbw / v0_ret.algbw << std::endl;
     }
 
     free_buffer(&param);
