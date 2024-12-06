@@ -1,5 +1,5 @@
-target_node="03"
-this_node="02"
+target_node="02"
+this_node="03"
 declare -a arr=('11' '12' '21' '22' '31' '32' '41' '42')
 for tar in "${arr[@]}"
 do
